@@ -33,6 +33,7 @@ import json
 import datetime
 import numpy as np
 import skimage.draw
+import PIL.Image as Image
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -48,6 +49,7 @@ COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
 # Directory to save logs and model checkpoints, if not provided
 # through the command line argument --logs
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
+
 
 ############################################################
 #  Configurations
@@ -91,17 +93,17 @@ class BalloonDataset(utils.Dataset):
 
         # Train or validation dataset?
         assert subset in ["train", "val"]
-        origin=dataset_dir
+        origin = dataset_dir
         dataset_dir = os.path.join(dataset_dir, subset)
-        mask_dir=os.path.join(origin,subset+"_mask")
+        mask_dir = os.path.join(origin, subset + "_mask")
 
         # Add images
-        files=os.listdir(dataset_dir)
+        files = os.listdir(dataset_dir)
         for file in files:
-            if file==".ipynb_checkpoints":
-              continue    
+            if file == ".ipynb_checkpoints":
+                continue
             image_path = os.path.join(dataset_dir, file)
-            mask_path=os.path.join(mask_dir,file.split('.')[0]+'.png')
+            mask_path = os.path.join(mask_dir, file.split('.')[0] + '.png')
             print(mask_path)
             self.add_image(
                 "balloon",
@@ -121,10 +123,9 @@ class BalloonDataset(utils.Dataset):
         if image_info["source"] != "balloon":
             return super(self.__class__, self).load_mask(image_id)
 
-
         mask = []
         info = self.image_info[image_id]
-        m = skimage.io.imread(info['mask'],as_gray=True).astype(np.bool)
+        m = skimage.io.imread(info['mask'], as_gray=True).astype(np.bool)
         mask.append(m)
         mask = np.stack(mask, axis=-1)
         return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
@@ -170,9 +171,9 @@ def color_splash(image, mask):
     """
     # Make a grayscale copy of the image. The grayscale copy still
     # has 3 RGB channels, though.
-    #gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
+    # gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
     gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 0
-    image = np.ones(image.shape,np.uint8)*255
+    image = np.ones(image.shape, np.uint8) * 255
     # Copy color pixels from the original color image where mask is set
     if mask.shape[-1] > 0:
         # We're treating all instances as one, so collapse the mask into one layer
@@ -183,8 +184,8 @@ def color_splash(image, mask):
     return splash
 
 
-def detect_and_color_splash(model, image_path=None, video_path=None):
-    assert image_path or video_path
+def detect_and_color_splash(model, image_path=None, video_path=None, big_path=None):
+    assert image_path or video_path or big_path
 
     # Image or video?
     if image_path:
@@ -234,6 +235,31 @@ def detect_and_color_splash(model, image_path=None, video_path=None):
                 vwriter.write(splash)
                 count += 1
         vwriter.release()
+    elif big_path:
+        img = Image.open(big_path)
+        lenx = 256
+        leny = 256
+
+        # 256 * 216
+        x = img.size[0] // lenx
+        y = img.size[1] // leny
+
+        to_image = Image.new('RGB', (img.size[0], img.size[1]))
+
+        for i in range(0, x):
+            for j in range(0, y):
+                startx = i * lenx
+                starty = j * leny
+                now_img = img.crop((startx, starty, startx + lenx, starty + leny))
+                r = model.detect([np.array(now_img)], verbose=1)[0]
+                print("!!!")
+                print(r)
+                # Color splash
+                splash = color_splash(now_img, r['masks'])
+                to_image.paste(splash, (i * lenx, j * leny))
+        file_name = "splash_{:%Y%m%dT%H%M%S}.jpg".format(datetime.datetime.now())
+        to_image.save(file_name)
+
     print("Saved to ", file_name)
 
 
@@ -263,6 +289,9 @@ if __name__ == '__main__':
     parser.add_argument('--image', required=False,
                         metavar="path or URL to image",
                         help='Image to apply the color splash effect on')
+    parser.add_argument('--path', required=False,
+                        metavar="path or URL to image",
+                        help='Image to apply the color splash effect on')
     parser.add_argument('--video', required=False,
                         metavar="path or URL to video",
                         help='Video to apply the color splash effect on')
@@ -272,8 +301,8 @@ if __name__ == '__main__':
     if args.command == "train":
         assert args.dataset, "Argument --dataset is required for training"
     elif args.command == "splash":
-        assert args.image or args.video,\
-               "Provide --image or --video to apply color splash"
+        assert args.image or args.video, \
+            "Provide --image or --video to apply color splash"
 
     print("Weights: ", args.weights)
     print("Dataset: ", args.dataset)
@@ -288,6 +317,8 @@ if __name__ == '__main__':
             # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
+
+
         config = InferenceConfig()
     config.display()
 
@@ -331,6 +362,8 @@ if __name__ == '__main__':
     elif args.command == "splash":
         detect_and_color_splash(model, image_path=args.image,
                                 video_path=args.video)
+    elif args.command == "output":
+        detect_and_color_splash(model, big_path=args.path)
     else:
         print("'{}' is not recognized. "
               "Use 'train' or 'splash'".format(args.command))
