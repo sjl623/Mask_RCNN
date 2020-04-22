@@ -91,55 +91,23 @@ class BalloonDataset(utils.Dataset):
 
         # Train or validation dataset?
         assert subset in ["train", "val"]
+        origin=dataset_dir
         dataset_dir = os.path.join(dataset_dir, subset)
-
-        # Load annotations
-        # VGG Image Annotator (up to version 1.6) saves each image in the form:
-        # { 'filename': '28503151_5b5b7ec140_b.jpg',
-        #   'regions': {
-        #       '0': {
-        #           'region_attributes': {},
-        #           'shape_attributes': {
-        #               'all_points_x': [...],
-        #               'all_points_y': [...],
-        #               'name': 'polygon'}},
-        #       ... more regions ...
-        #   },
-        #   'size': 100202
-        # }
-        # We mostly care about the x and y coordinates of each region
-        # Note: In VIA 2.0, regions was changed from a dict to a list.
-        annotations = json.load(open(os.path.join(dataset_dir, "via_region_data.json")))
-        annotations = list(annotations.values())  # don't need the dict keys
-
-        # The VIA tool saves images in the JSON even if they don't have any
-        # annotations. Skip unannotated images.
-        annotations = [a for a in annotations if a['regions']]
+        mask_dir=os.path.join(origin,subset+"_mask")
 
         # Add images
-        for a in annotations:
-            # Get the x, y coordinaets of points of the polygons that make up
-            # the outline of each object instance. These are stores in the
-            # shape_attributes (see json format above)
-            # The if condition is needed to support VIA versions 1.x and 2.x.
-            if type(a['regions']) is dict:
-                polygons = [r['shape_attributes'] for r in a['regions'].values()]
-            else:
-                polygons = [r['shape_attributes'] for r in a['regions']] 
-
-            # load_mask() needs the image size to convert polygons to masks.
-            # Unfortunately, VIA doesn't include it in JSON, so we must read
-            # the image. This is only managable since the dataset is tiny.
-            image_path = os.path.join(dataset_dir, a['filename'])
-            image = skimage.io.imread(image_path)
-            height, width = image.shape[:2]
-
+        files=os.listdir(dataset_dir)
+        for file in files:
+            if file==".ipynb_checkpoints":
+              continue    
+            image_path = os.path.join(dataset_dir, file)
+            mask_path=os.path.join(mask_dir,file.split('.')[0]+'.png')
+            print(mask_path)
             self.add_image(
                 "balloon",
-                image_id=a['filename'],  # use file name as a unique image id
+                image_id=file,  # use file name as a unique image id
                 path=image_path,
-                width=width, height=height,
-                polygons=polygons)
+                mask=mask_path)
 
     def load_mask(self, image_id):
         """Generate instance masks for an image.
@@ -153,18 +121,12 @@ class BalloonDataset(utils.Dataset):
         if image_info["source"] != "balloon":
             return super(self.__class__, self).load_mask(image_id)
 
-        # Convert polygons to a bitmap mask of shape
-        # [height, width, instance_count]
-        info = self.image_info[image_id]
-        mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
-                        dtype=np.uint8)
-        for i, p in enumerate(info["polygons"]):
-            # Get indexes of pixels inside the polygon and set them to 1
-            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-            mask[rr, cc, i] = 1
 
-        # Return mask, and array of class IDs of each instance. Since we have
-        # one class ID only, we return an array of 1s
+        mask = []
+        info = self.image_info[image_id]
+        m = skimage.io.imread(info['mask'],as_gray=True).astype(np.bool)
+        mask.append(m)
+        mask = np.stack(mask, axis=-1)
         return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
 
     def image_reference(self, image_id):
@@ -208,7 +170,9 @@ def color_splash(image, mask):
     """
     # Make a grayscale copy of the image. The grayscale copy still
     # has 3 RGB channels, though.
-    gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
+    #gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
+    gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 0
+    image = np.ones(image.shape,np.uint8)*255
     # Copy color pixels from the original color image where mask is set
     if mask.shape[-1] > 0:
         # We're treating all instances as one, so collapse the mask into one layer
@@ -230,6 +194,8 @@ def detect_and_color_splash(model, image_path=None, video_path=None):
         image = skimage.io.imread(args.image)
         # Detect objects
         r = model.detect([image], verbose=1)[0]
+        print("!!!")
+        print(r)
         # Color splash
         splash = color_splash(image, r['masks'])
         # Save output
